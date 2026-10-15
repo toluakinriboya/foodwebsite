@@ -1,0 +1,78 @@
+
+name: Jason App - Build and Push to Amazon ECR
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: jason-app-ecr-production
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    name: Build and push Docker image to ECR
+    runs-on: self-hosted
+    environment: production
+
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f Dockerfile || {
+            echo "::error::Dockerfile not found at repository root."
+            exit 1
+          }
+          [[ -n "${AWS_REGION}" ]] || {
+            echo "::error::Set AWS_REGION in the production environment variables."
+            exit 1
+          }
+          [[ -n "${ECR_REPOSITORY}" ]] || {
+            echo "::error::Set ECR_REPOSITORY in the production environment variables."
+            exit 1
+          }
+
+      - name: Configure AWS credentials using GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Sign in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image
+        shell: bash
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          set -euo pipefail
+
+          IMAGE_TAG="${GITHUB_SHA::12}"
+          IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}"
+
+          docker build --pull \
+            --tag "${IMAGE_URI}:${IMAGE_TAG}" \
+            --tag "${IMAGE_URI}:latest" \
+            .
+
+          docker push "${IMAGE_URI}:${IMAGE_TAG}"
+          docker push "${IMAGE_URI}:latest"
+
+          echo "Pushed ${IMAGE_URI}:${IMAGE_TAG}"
+          echo "Pushed ${IMAGE_URI}:latest"
